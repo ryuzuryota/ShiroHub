@@ -1,0 +1,140 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+local camera = workspace.CurrentCamera
+local character = player.Character or player.CharacterAdded:Wait()
+local hrp = character:WaitForChild("HumanoidRootPart")
+
+-- Synchronisation Setup
+local Bindables = ReplicatedStorage:WaitForChild("Bindables")
+local powerChangedEvent = Bindables:WaitForChild("PowerChanged")
+
+-- =========================
+-- CONFIG
+-- =========================
+local level = 3 
+local baseSpeed = 7.84
+local speedStep = 2.85
+local friction = 6.3
+
+-- State
+local currentLine, currentSphere
+local lastPosition = hrp.Position
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "CompactPredictor"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = player:WaitForChild("PlayerGui")
+
+local mainFrame = Instance.new("Frame")
+mainFrame.Size = UDim2.new(0, 140, 0, 40) -- Much smaller
+mainFrame.Position = UDim2.new(0.5, -70, 0.05, 0)
+mainFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+mainFrame.BackgroundTransparency = 0.6 -- More transparent
+mainFrame.BorderSizePixel = 0
+mainFrame.Active = true
+mainFrame.Draggable = true -- Built-in but we'll add smooth logic below
+mainFrame.Parent = screenGui
+
+-- Add rounded corners
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 8)
+corner.Parent = mainFrame
+
+local textLabel = Instance.new("TextLabel")
+textLabel.Size = UDim2.new(1, 0, 1, 0)
+textLabel.BackgroundTransparency = 1
+textLabel.TextColor3 = Color3.fromRGB(255, 50, 50)
+textLabel.Font = Enum.Font.SourceSansBold
+textLabel.TextScaled = true
+textLabel.Text = "Syncing..."
+textLabel.Parent = mainFrame
+
+local dragging, dragInput, dragStart, startPos
+local function update(input)
+	local delta = input.Position - dragStart
+	mainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+end
+
+mainFrame.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		dragging = true
+		dragStart = input.Position
+		startPos = mainFrame.Position
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then dragging = false end
+		end)
+	end
+end)
+
+mainFrame.InputChanged:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+		dragInput = input
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if input == dragInput and dragging then update(input) end
+end)
+
+local function addBlackBorder(part)
+	local highlight = Instance.new("Highlight")
+	highlight.Adornee = part
+	highlight.FillTransparency = 1
+	highlight.OutlineColor = Color3.new(0, 0, 0)
+	highlight.OutlineTransparency = 0
+	highlight.Parent = part
+end
+
+local function createPredictionLine(startPos, endPos)
+	if currentLine then currentLine:Destroy() end
+	if currentSphere then currentSphere:Destroy() end
+
+	local line = Instance.new("Part", workspace)
+	line.Anchored, line.CanCollide = true, false
+	line.Transparency, line.Material = 0.2, Enum.Material.Neon
+	line.Color = Color3.fromRGB(255, 0, 0)
+	local distance = (endPos - startPos).Magnitude
+	line.Size = Vector3.new(0.3, 0.3, distance)
+	line.CFrame = CFrame.new(startPos, endPos) * CFrame.new(0, 0, -distance/2)
+	addBlackBorder(line)
+	currentLine = line
+
+	local sphere = Instance.new("Part", workspace)
+	sphere.Shape, sphere.Anchored, sphere.CanCollide = Enum.PartType.Ball, true, false
+	sphere.Transparency, sphere.Material = 0.2, Enum.Material.Neon
+	sphere.Color = Color3.fromRGB(255, 0, 0)
+	sphere.Size = Vector3.new(2, 2, 2)
+	sphere.Position = endPos
+	addBlackBorder(sphere)
+	currentSphere = sphere
+end
+
+powerChangedEvent.Event:Connect(function(newPowerLevel)
+    level = newPowerLevel
+end)
+
+RunService.RenderStepped:Connect(function(dt)
+	if not hrp or not camera then return end
+
+	local currentSpeed = (hrp.Position - lastPosition).Magnitude / dt
+	local moving = currentSpeed > 0.5
+	lastPosition = hrp.Position
+
+	local direction = hrp.AssemblyLinearVelocity
+	if direction.Magnitude < 1 then direction = camera.CFrame.LookVector end
+	
+	local speedToUse = moving and currentSpeed or (baseSpeed + (level - 1) * speedStep)
+	local endPos = hrp.Position + Vector3.new(direction.X, 0, direction.Z).Unit * ((speedToUse^2) / (2 * friction))
+	
+	createPredictionLine(hrp.Position, endPos)
+	textLabel.Text = string.format("Pwr: %d | %.1f studs", level, (endPos - hrp.Position).Magnitude)
+end)
+
+player.CharacterAdded:Connect(function(char)
+	character = char
+	hrp = char:WaitForChild("HumanoidRootPart")
+end)
