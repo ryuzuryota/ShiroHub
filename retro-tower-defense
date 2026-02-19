@@ -1,0 +1,138 @@
+local replicatedstorage = game:GetService("ReplicatedStorage")
+local library = loadstring(game:HttpGet('https://raw.githubusercontent.com/ovoch228/depthsoimgui/refs/heads/main/library'))()
+local bytenet = require(replicatedstorage:WaitForChild("Teawork"):WaitForChild("Shared"):WaitForChild("Services"):WaitForChild("ByteNetworking"))
+
+local api = {}
+
+-- Variables setup
+local ostime = os.clock -- Switched to os.clock for sub-second precision
+local taskwait = task.wait
+local env = getgenv()
+
+-- Initialize environment variables
+env.StratName = "Strat"
+env.timer = 0 
+env.lasttime = nil
+env.waveinfo = 1
+env.isroundover = false
+env.totalplacedtowers = 0
+env.firsttower = 1
+env.clockrunning = false -- Point 5: Concurrency Guard
+
+if game.PlaceId ~= 124069847780670 then return api end
+
+local towers = bytenet.Towers
+local mapinfo = replicatedstorage.RoundInfo
+local roundresultui = game:GetService("Players").LocalPlayer.PlayerGui.GameUI.RoundResult
+
+-- UI Logic
+local window = library:CreateWindow({
+    Title = "Shitty X - Advanced Sync",
+    Size = UDim2.new(0, 350, 0, 370),
+    Position = UDim2.new(0.5, 0, 0, 70),
+})
+
+local logtab = window:CreateTab({ Name = "Macro Player", Visible = true })
+local logstab = window:CreateTab({ Name = "Logs", Visible = true })
+local loglabel = logtab:Label({ Label = "Status: Initializing" })
+
+function updatelog(text: string)
+	setthreadidentity(7)
+	loglabel:SetText("Status: " .. text)
+end
+
+function waitTime(time, wave)
+	while (env.waveinfo < wave) and not env.isroundover do
+		taskwait(0.05)
+	end
+    while (env.timer < time) and not env.isroundover do
+        taskwait(0.05)
+    end
+    return not env.isroundover
+end
+
+-- API Functions
+function api:Loadout(towers_list: table)
+	for i = 1, #towers_list do
+		bytenet.Inventory.EquipTower.invoke({["TowerID"] = towers_list[i], ["Slot"] = i})
+		taskwait(0.5)
+	end
+end
+
+function api:Start()
+    if env.clockrunning then return end -- Point 5: Prevent multiple loops
+    env.clockrunning = true
+
+	bytenet.Timescale.SetTimescale.send(2)
+	env.waveinfo = mapinfo:GetAttribute("Wave") or 1
+	
+	mapinfo:GetAttributeChangedSignal("Wave"):Connect(function()
+		env.waveinfo = mapinfo:GetAttribute("Wave")
+	end)
+
+	roundresultui:GetPropertyChangedSignal("Visible"):Connect(function()
+		env.isroundover = roundresultui.Visible
+	end)
+	
+	task.spawn(function()
+		while true do
+			if env.lasttime and not env.isroundover then
+                -- Point 4: Precision calculation using os.clock
+				env.timer = (ostime() - env.lasttime) * 2
+			end
+			taskwait(0.05)
+		end
+	end)
+end
+
+function api:Difficulty(diff: string)
+	updatelog(`Voting {diff}`)
+	bytenet.DifficultyVote.Vote.send(diff)
+	
+	while #mapinfo:GetAttribute("Difficulty") == 0 do taskwait(0.05) end 
+	
+	-- Sync Clock
+	env.lasttime = ostime()
+	env.timer = 0
+	env.waveinfo = 1
+    env.isroundover = false
+	
+	updatelog("Game Started - Timer Synced")
+end
+
+function api:Place(tower: string, position: Vector3, time: number, wave: number)
+	if waitTime(time, wave) then	
+		env.totalplacedtowers = env.totalplacedtowers + 1
+		updatelog(`Placed {tower}`)
+		towers.PlaceTower.invoke({["Position"] = position, ["Rotation"] = 0, ["TowerID"] = tower})
+	end
+end
+
+function api:Upgrade(tower_idx: number, time: number, wave: number)
+	if waitTime(time, wave) then
+		updatelog(`Upgraded Tower {tower_idx}`)
+		local realindex = env.firsttower + (tower_idx - 1)
+		towers.UpgradeTower.invoke(realindex)
+	end
+end
+
+function api:PlayAgain()
+	while not env.isroundover do taskwait(0.5) end
+	
+    -- Point 1: RESET everything for the fresh match
+	env.totalplacedtowers = 0 
+	env.firsttower = 1
+	env.timer = 0
+    env.lasttime = nil -- Stop timer until difficulty is voted again
+	
+	taskwait(2) -- Wait for UI to settle
+	bytenet.RoundResult.VoteForRestart.send(true)
+	updatelog("Voted Restart - Cleaning Data")
+end
+
+-- Helper functions to keep original macro compatible
+function api:Ready(t, w) if waitTime(t, w) then bytenet.ReadyVote.Vote.send(true) end end
+function api:AutoSkip(e, t, w) if waitTime(t, w) then bytenet.SkipWave.ToggleAutoSkip.send(e) end end
+function api:Loop(func) while taskwait(0.03) do func() end end
+
+return api
